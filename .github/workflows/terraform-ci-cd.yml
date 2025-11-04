@@ -1,24 +1,26 @@
-name: Terraform Azure CI/CD (with backend-config)
+name: Terraform Azure CI/CD
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: "Terraform action"
+        description: "Terraform action to perform"
         type: choice
         options: [plan, apply, refresh, import]
         default: plan
+        required: true
       environment:
-        description: "Target env tfvars (dev/test/prod)"
+        description: "Target environment tfvars (dev/test/prod)"
         type: choice
         options: [dev, test, prod]
         default: dev
+        required: true
       import_address:
-        description: "For import: terraform address (e.g. module.vm.azurerm_linux_virtual_machine.vm)"
+        description: "Terraform address for import (required when action=import)"
         type: string
         required: false
       import_id:
-        description: "For import: Azure resource ID"
+        description: "Azure resource ID for import (required when action=import)"
         type: string
         required: false
 
@@ -31,49 +33,89 @@ env:
 
 jobs:
   terraform:
-    runs-on: ubuntu-latest
     name: "Terraform ${{ inputs.action }} (${{ inputs.environment }})"
+    runs-on: ubuntu-latest
+
+    # Map AZURE_CREDENTIALS JSON → ARM_* so azurerm uses SP client-secret (not CLI/OIDC)
+    env:
+      ARM_CLIENT_ID:       ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}
+      ARM_CLIENT_SECRET:   ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}
+      ARM_TENANT_ID:       ${{ fromJSON(secrets.AZURE_CREDENTIALS).tenantId }}
+      ARM_SUBSCRIPTION_ID: ${{ fromJSON(secrets.AZURE_CREDENTIALS).subscriptionId }}
+      ARM_USE_OIDC:        "false"
+      ARM_ENVIRONMENT:     "public"
 
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.7.5
+          terraform_wrapper: false   # get real exit codes
 
       - name: Azure Login (Service Principal JSON)
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # ---- Init with backend config from repo variables ----
-      # Required repository Variables (Settings -> Variables):
-      #   TF_BACKEND_RG           -> tfstate resource group name
-      #   TF_BACKEND_STORAGE      -> tfstate storage account name
-      #   TF_BACKEND_CONTAINER    -> tfstate container name
-      # Optional:
-      #   TF_BACKEND_KEY_PREFIX   -> prefix for the state blob key (default: terraform)
-      #   TF_BACKEND_SUBSCRIPTION -> subscription ID if needed for cross-subscription storage
-      #   TF_BACKEND_USE_AAD      -> set "true" to use AAD auth (default true)
-      - name: Terraform Init (remote backend)
-        env:
-          KEY_PREFIX: ${{ vars.TF_BACKEND_KEY_PREFIX || 'terraform' }}
-          USE_AAD: ${{ vars.TF_BACKEND_USE_AAD || 'true' }}
+      - name: Preflight backend variables
+        shell: bash
         run: |
-          terraform init -upgrade -reconfigure             -backend-config="resource_group_name=${{ vars.TF_BACKEND_RG }}"             -backend-config="storage_account_name=${{ vars.TF_BACKEND_STORAGE }}"             -backend-config="container_name=${{ vars.TF_BACKEND_CONTAINER }}"             -backend-config="key=${KEY_PREFIX}-${{ inputs.environment }}.tfstate"             -backend-config="use_azuread_auth=${USE_AAD}"             ${{ vars.TF_BACKEND_SUBSCRIPTION && format('-backend-config=\"subscription_id={0}\"', vars.TF_BACKEND_SUBSCRIPTION) || '' }}
+          set -euo pipefail
+          for v in TF_BACKEND_RG TF_BACKEND_STORAGE TF_BACKEND_CONTAINER; do
+            if [[ -z "${!v:-}" && -z "${{ vars[$v] }}" ]]; then
+              echo "Missing repository Variable: $v"; exit 1
+            fi
+          done
+
+      # Remote backend via -backend-config (values supplied as repo Variables)
+      - name: Terraform Init (remote backend)
+        shell: bash
+        env:
+          TF_BACKEND_RG:            ${{ vars.TF_BACKEND_RG }}
+          TF_BACKEND_STORAGE:       ${{ vars.TF_BACKEND_STORAGE }}
+          TF_BACKEND_CONTAINER:     ${{ vars.TF_BACKEND_CONTAINER }}
+          TF_BACKEND_KEY_PREFIX:    ${{ vars.TF_BACKEND_KEY_PREFIX || 'terraform' }}
+          TF_BACKEND_SUBSCRIPTION:  ${{ vars.TF_BACKEND_SUBSCRIPTION }}
+          TF_BACKEND_USE_AAD:       ${{ vars.TF_BACKEND_USE_AAD || 'true' }}
+          ENV_NAME:                 ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          args=(
+            -backend-config="resource_group_name=${TF_BACKEND_RG}"
+            -backend-config="storage_account_name=${TF_BACKEND_STORAGE}"
+            -backend-config="container_name=${TF_BACKEND_CONTAINER}"
+            -backend-config="key=${TF_BACKEND_KEY_PREFIX}-${ENV_NAME}.tfstate"
+            -backend-config="use_azuread_auth=${TF_BACKEND_USE_AAD}"
+          )
+          if [[ -n "${TF_BACKEND_SUBSCRIPTION:-}" ]]; then
+            args+=(-backend-config="subscription_id=${TF_BACKEND_SUBSCRIPTION}")
+          fi
+          terraform init -upgrade -reconfigure "${args[@]}"
 
       - name: Terraform Validate
         run: terraform validate
 
-      # ---- PLAN ----
+      # ----- PLAN -----
       - name: Terraform Plan
         if: ${{ inputs.action == 'plan' }}
+        id: plan
+        shell: bash
         run: |
-          terraform plan             -var-file="environments/${{ inputs.environment }}.tfvars"             -out="plan.tfplan"             -no-color | tee plan.txt
+          set -o pipefail
+          terraform plan \
+            -var-file="environments/${{ inputs.environment }}.tfvars" \
+            -out="plan.tfplan" \
+            -no-color -detailed-exitcode | tee plan.txt
+          code=${PIPESTATUS[0]}
+          if [[ "$code" -eq 1 ]]; then
+            echo "Plan failed"; exit 1
+          fi
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
 
-      - name: Upload Plan Artifact
+      - name: Upload Plan
         if: ${{ inputs.action == 'plan' }}
         uses: actions/upload-artifact@v4
         with:
@@ -82,7 +124,7 @@ jobs:
             plan.tfplan
             plan.txt
 
-      # ---- APPLY ----
+      # ----- APPLY -----
       - name: Terraform Apply
         if: ${{ inputs.action == 'apply' }}
         run: terraform apply -auto-approve -var-file="environments/${{ inputs.environment }}.tfvars"
@@ -91,24 +133,28 @@ jobs:
         if: ${{ inputs.action == 'apply' }}
         run: terraform output -json > tf-outputs.json
 
-      - name: Upload Outputs Artifact
+      - name: Upload Outputs
         if: ${{ inputs.action == 'apply' }}
         uses: actions/upload-artifact@v4
         with:
           name: terraform-outputs-${{ inputs.environment }}
           path: tf-outputs.json
 
-      # ---- REFRESH ----
+      # ----- REFRESH -----
       - name: Terraform Refresh Only
         if: ${{ inputs.action == 'refresh' }}
         run: terraform apply -refresh-only -auto-approve -var-file="environments/${{ inputs.environment }}.tfvars"
 
-      # ---- IMPORT ----
+      # ----- IMPORT -----
       - name: Terraform Import
         if: ${{ inputs.action == 'import' }}
+        shell: bash
         run: |
-          if [ -z "${{ inputs.import_address }}" ] || [ -z "${{ inputs.import_id }}" ]; then
-            echo "import_address and import_id are required for import action"
+          if [[ -z "${{ inputs.import_address }}" || -z "${{ inputs.import_id }}" ]]; then
+            echo "ERROR: import_address and import_id are required for import"
             exit 1
           fi
-          terraform import             -var-file="environments/${{ inputs.environment }}.tfvars"             "${{ inputs.import_address }}"             "${{ inputs.import_id }}"
+          terraform import \
+            -var-file="environments/${{ inputs.environment }}.tfvars" \
+            "${{ inputs.import_address }}" \
+            "${{ inputs.import_id }}"
