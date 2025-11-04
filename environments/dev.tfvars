@@ -45,9 +45,9 @@ subnets = {
 }
 
 vm = {
-  size             = "Standard_B2s"
+  size             = "Standard_B1s"
   admin_username   = "azureuser"
-  ssh_public_key   = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCEXAMPLEYOURKEYONLY"
+  ssh_public_key   = ""
   subnet_key       = "web"
   create_public_ip = true
   data_disks_gb    = [64]
