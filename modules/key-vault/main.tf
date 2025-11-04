@@ -7,7 +7,6 @@ resource "azurerm_key_vault" "kv" {
   tenant_id           = data.azurerm_client_config.current.tenant_id
   sku_name            = var.sku_name
 
-  # ✅ Use Azure RBAC (no access_policy blocks)
   rbac_authorization_enabled = true
 
   purge_protection_enabled      = var.purge_protection_enabled
@@ -16,16 +15,23 @@ resource "azurerm_key_vault" "kv" {
   tags                          = var.tags
 }
 
-# ----- RBAC role assignments -----
+# RBAC role assignments
 
-# Terraform runner SP: full admin on this vault
+# Service Principal running Terraform: full management
 resource "azurerm_role_assignment" "kv_admin" {
   scope                = azurerm_key_vault.kv.id
   role_definition_name = "Key Vault Administrator"
   principal_id         = data.azurerm_client_config.current.object_id
 }
 
-# Principals (e.g., VM managed identity) can read secrets
+# Required for key create/rotation/crypto operations
+resource "azurerm_role_assignment" "kv_crypto_officer" {
+  scope                = azurerm_key_vault.kv.id
+  role_definition_name = "Key Vault Crypto Officer"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+# Managed identities that should read secrets
 resource "azurerm_role_assignment" "kv_secrets_user" {
   for_each             = toset(var.principal_object_ids)
   scope                = azurerm_key_vault.kv.id
@@ -33,17 +39,17 @@ resource "azurerm_role_assignment" "kv_secrets_user" {
   principal_id         = each.value
 }
 
-# Small wait so RBAC takes effect (prevents 403 on creates)
+# Allow RBAC to propagate before creating secrets/keys
 resource "time_sleep" "wait_for_rbac" {
   depends_on = [
     azurerm_role_assignment.kv_admin,
+    azurerm_role_assignment.kv_crypto_officer,
     azurerm_role_assignment.kv_secrets_user
   ]
-  create_duration = "30s"
+  create_duration = "45s"
 }
 
-# ----- Secrets and Keys (after RBAC readiness) -----
-
+# Secrets
 resource "azurerm_key_vault_secret" "secrets" {
   for_each     = var.secrets
   name         = each.key
@@ -52,6 +58,7 @@ resource "azurerm_key_vault_secret" "secrets" {
   depends_on   = [time_sleep.wait_for_rbac]
 }
 
+# Optional key creation
 resource "azurerm_key_vault_key" "key" {
   count        = var.create_key ? 1 : 0
   name         = var.key_name
