@@ -17,34 +17,34 @@ resource "azurerm_key_vault" "kv" {
 
 # Service Principal running Terraform: full administrative rights on vault
 resource "azurerm_role_assignment" "kv_admin" {
-  scope                = azurerm_key_vault.kv.id
-  role_definition_name = "Key Vault Administrator"
-  principal_id         = data.azurerm_client_config.current.object_id
+  scope                            = azurerm_key_vault.kv.id
+  role_definition_name             = "Key Vault Administrator"
+  principal_id                     = data.azurerm_client_config.current.object_id
   skip_service_principal_aad_check = true
 }
 
 # Needed to create and manage keys
 resource "azurerm_role_assignment" "kv_crypto_officer" {
-  scope                = azurerm_key_vault.kv.id
-  role_definition_name = "Key Vault Crypto Officer"
-  principal_id         = data.azurerm_client_config.current.object_id
+  scope                            = azurerm_key_vault.kv.id
+  role_definition_name             = "Key Vault Crypto Officer"
+  principal_id                     = data.azurerm_client_config.current.object_id
   skip_service_principal_aad_check = true
 }
 
 # Needed to avoid 403 when reading key rotation policy
 resource "azurerm_role_assignment" "kv_crypto_user" {
-  scope                = azurerm_key_vault.kv.id
-  role_definition_name = "Key Vault Crypto User"
-  principal_id         = data.azurerm_client_config.current.object_id
+  scope                            = azurerm_key_vault.kv.id
+  role_definition_name             = "Key Vault Crypto User"
+  principal_id                     = data.azurerm_client_config.current.object_id
   skip_service_principal_aad_check = true
 }
 
 # Managed identities allowed to read secrets
 resource "azurerm_role_assignment" "kv_secrets_user" {
-  for_each             = toset(var.principal_object_ids)
-  scope                = azurerm_key_vault.kv.id
-  role_definition_name = "Key Vault Secrets User"
-  principal_id         = each.value
+  for_each                         = toset(var.principal_object_ids)
+  scope                            = azurerm_key_vault.kv.id
+  role_definition_name             = "Key Vault Secrets User"
+  principal_id                     = each.value
   skip_service_principal_aad_check = true
 }
 
@@ -77,11 +77,11 @@ resource "azurerm_key_vault_key" "key" {
   key_size     = var.key_size
   key_opts     = ["encrypt", "decrypt", "sign", "verify", "wrapKey", "unwrapKey"]
 
-  # Valid rotation policy (ISO-8601 durations)
   rotation_policy {
-    expire_after = "P365D"   # key expires after 365 days
+    expire_after         = "P365D" # key expires after 365 days
+    notify_before_expiry = "P30D"  # notify 30 days before expiry
     automatic {
-      time_before_expiry = "P30D"  # rotate 30 days before expiry
+      time_before_expiry = "P30D" # rotate 30 days before expiry
     }
   }
 
