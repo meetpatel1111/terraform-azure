@@ -77,9 +77,12 @@ resource "azurerm_key_vault_key" "key" {
   key_size     = var.key_size
   key_opts     = ["encrypt", "decrypt", "sign", "verify", "wrapKey", "unwrapKey"]
 
-  # Prevent Terraform from querying rotation policy (prevents 403)
+  # Valid rotation policy (ISO-8601 durations)
   rotation_policy {
-    expire_after = null
+    expire_after = "P365D"   # key expires after 365 days
+    automatic {
+      time_before_expiry = "P30D"  # rotate 30 days before expiry
+    }
   }
 
   depends_on = [time_sleep.wait_for_rbac]
