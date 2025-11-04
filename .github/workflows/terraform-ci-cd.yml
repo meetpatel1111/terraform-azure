@@ -36,7 +36,7 @@ jobs:
     name: "Terraform ${{ inputs.action }} (${{ inputs.environment }})"
     runs-on: ubuntu-latest
 
-    # Map AZURE_CREDENTIALS JSON → ARM_* so azurerm uses SP client-secret (not CLI/OIDC)
+    # Force azurerm to use SP client-secret (not Azure CLI or OIDC)
     env:
       ARM_CLIENT_ID:       ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}
       ARM_CLIENT_SECRET:   ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}
@@ -53,24 +53,42 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.7.5
-          terraform_wrapper: false   # get real exit codes
+          terraform_wrapper: false  # get real exit codes
 
       - name: Azure Login (Service Principal JSON)
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      # Preflight: load repo Variables into env and verify they exist
       - name: Preflight backend variables
         shell: bash
+        env:
+          TF_BACKEND_RG:           ${{ vars.TF_BACKEND_RG }}
+          TF_BACKEND_STORAGE:      ${{ vars.TF_BACKEND_STORAGE }}
+          TF_BACKEND_CONTAINER:    ${{ vars.TF_BACKEND_CONTAINER }}
+          TF_BACKEND_KEY_PREFIX:   ${{ vars.TF_BACKEND_KEY_PREFIX }}
+          TF_BACKEND_SUBSCRIPTION: ${{ vars.TF_BACKEND_SUBSCRIPTION }}
+          TF_BACKEND_USE_AAD:      ${{ vars.TF_BACKEND_USE_AAD }}
         run: |
           set -euo pipefail
           for v in TF_BACKEND_RG TF_BACKEND_STORAGE TF_BACKEND_CONTAINER; do
-            if [[ -z "${!v:-}" && -z "${{ vars[$v] }}" ]]; then
+            if [[ -z "${!v:-}" ]]; then
               echo "Missing repository Variable: $v"; exit 1
             fi
           done
+          : "${TF_BACKEND_KEY_PREFIX:=terraform}"
+          : "${TF_BACKEND_USE_AAD:=true}"
+          echo "Using backend:"
+          echo "  RG=${TF_BACKEND_RG}"
+          echo "  SA=${TF_BACKEND_STORAGE}"
+          echo "  CONTAINER=${TF_BACKEND_CONTAINER}"
+          echo "  KEY_PREFIX=${TF_BACKEND_KEY_PREFIX}"
+          echo "  USE_AAD=${TF_BACKEND_USE_AAD}"
+          if [[ -n "${TF_BACKEND_SUBSCRIPTION:-}" ]]; then
+            echo "  SUBSCRIPTION=${TF_BACKEND_SUBSCRIPTION}"
+          fi
 
-      # Remote backend via -backend-config (values supplied as repo Variables)
       - name: Terraform Init (remote backend)
         shell: bash
         env:
