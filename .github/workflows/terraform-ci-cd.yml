@@ -1,110 +1,143 @@
 name: Terraform Azure CI/CD
 
 on:
-  pull_request:
-    paths:
-      - '**/*.tf'
-      - 'environments/**/*.tfvars'
-      - '.github/workflows/terraform-ci-cd.yml'
-  push:
-    branches: [ main ]
-    paths:
-      - '**/*.tf'
-      - 'environments/**/*.tfvars'
-      - '.github/workflows/terraform-ci-cd.yml'
   workflow_dispatch:
     inputs:
+      action:
+        description: "Terraform action to perform"
+        type: choice
+        options: [plan, apply, refresh, import]
+        default: plan
+        required: true
+
       environment:
         description: "Target environment tfvars (dev/test/prod)"
         type: choice
-        required: true
         options: [dev, test, prod]
         default: dev
-      auto_approve:
-        description: "Apply without manual approval (use with caution)"
-        type: boolean
+        required: true
+
+      import_address:
+        description: "Terraform address for import (required when action=import)"
+        type: string
         required: false
-        default: false
+
+      import_id:
+        description: "Azure resource ID for import (required when action=import)"
+        type: string
+        required: false
 
 permissions:
-  id-token: write
   contents: read
-  pull-requests: write
 
 env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
-  TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
-  ARM_USE_OIDC: "true"
 
 jobs:
-  plan:
-    name: Terraform fmt/validate/plan
+  terraform:
+    name: "Terraform ${{ inputs.action }} (${{ inputs.environment }})"
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        environment: ${{ fromJSON( github.event_name == 'pull_request' && '["dev"]' || '["dev","test","prod"]' ) }}
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p ${{ env.TF_PLUGIN_CACHE_DIR }}
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.7.5
-      - uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - run: terraform fmt -check -recursive
-      - run: terraform init
-      - run: terraform validate
-      - name: Terraform Plan (${{ matrix.environment }})
-        run: |
-          terraform plan             -var-file="environments/${{ matrix.environment }}.tfvars"             -out="plan-${{ matrix.environment }}.tfplan"             -no-color | tee "plan-${{ matrix.environment }}.txt"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: terraform-plan-${{ matrix.environment }}
-          path: |
-            plan-${{ matrix.environment }}.tfplan
-            plan-${{ matrix.environment }}.txt
-      - name: Comment PR with Plan (dev only)
-        if: github.event_name == 'pull_request' && matrix.environment == 'dev'
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          path: plan-dev.txt
 
-  apply:
-    if: github.event_name == 'workflow_dispatch'
-    name: Terraform Apply (${{ inputs.environment }})
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
     steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p ${{ env.TF_PLUGIN_CACHE_DIR }}
-      - uses: hashicorp/setup-terraform@v3
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.7.5
-      - uses: azure/login@v2
+
+      - name: Azure Login (via Credentials JSON)
+        uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - run: terraform init
-      - name: Terraform Plan (to-apply)
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # -------------------------------------------------
+      # REMOTE STATE BACKEND CONFIG
+      # Configure backend via repo variables (NOT stored in code)
+      # Required GitHub Variables:
+      #   TF_BACKEND_RG
+      #   TF_BACKEND_STORAGE
+      #   TF_BACKEND_CONTAINER
+      # Optional:
+      #   TF_BACKEND_KEY_PREFIX  (default = terraform)
+      #   TF_BACKEND_SUBSCRIPTION
+      #   TF_BACKEND_USE_AAD     (default = true)
+      # -------------------------------------------------
+      - name: Terraform Init (remote backend)
+        env:
+          KEY_PREFIX: ${{ vars.TF_BACKEND_KEY_PREFIX || 'terraform' }}
+          USE_AAD: ${{ vars.TF_BACKEND_USE_AAD || 'true' }}
         run: |
-          terraform plan             -var-file="environments/${{ inputs.environment }}.tfvars"             -out="to-apply.tfplan"             -no-color | tee "plan-to-apply.txt"
-      - name: Manual approval gate
-        if: ${{ !inputs.auto_approve }}
-        uses: trstringer/manual-approval@v1
+          terraform init -upgrade -reconfigure \
+            -backend-config="resource_group_name=${{ vars.TF_BACKEND_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TF_BACKEND_STORAGE }}" \
+            -backend-config="container_name=${{ vars.TF_BACKEND_CONTAINER }}" \
+            -backend-config="key=${KEY_PREFIX}-${{ inputs.environment }}.tfstate" \
+            -backend-config="use_azuread_auth=${USE_AAD}" \
+            ${{ vars.TF_BACKEND_SUBSCRIPTION && format('-backend-config="subscription_id={0}"', vars.TF_BACKEND_SUBSCRIPTION) || '' }}
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      # -------------------------------------------------
+      # PLAN
+      # -------------------------------------------------
+      - name: Terraform Plan
+        if: ${{ inputs.action == 'plan' }}
+        run: |
+          terraform plan \
+            -var-file="environments/${{ inputs.environment }}.tfvars" \
+            -out="plan.tfplan" \
+            -no-color | tee plan.txt
+
+      - name: Upload Plan Artifact
+        if: ${{ inputs.action == 'plan' }}
+        uses: actions/upload-artifact@v4
         with:
-          secret: ${{ secrets.GITHUB_TOKEN }}
-          approvers: ${{ vars.APPROVERS || '' }}
-          minimum-approvals: 1
-          issue-title: "Approve Terraform Apply to ${{ inputs.environment }}"
-          issue-body: "Review the plan in artifacts and approve to proceed."
-      - run: terraform apply -auto-approve "to-apply.tfplan"
-      - run: terraform output -json > tf-outputs.json
-      - uses: actions/upload-artifact@v4
+          name: terraform-plan-${{ inputs.environment }}
+          path: |
+            plan.tfplan
+            plan.txt
+
+      # -------------------------------------------------
+      # APPLY
+      # -------------------------------------------------
+      - name: Terraform Apply
+        if: ${{ inputs.action == 'apply' }}
+        run: terraform apply -auto-approve -var-file="environments/${{ inputs.environment }}.tfvars"
+
+      - name: Capture Terraform Outputs
+        if: ${{ inputs.action == 'apply' }}
+        run: terraform output -json > tf-outputs.json
+
+      - name: Upload Outputs Artifact
+        if: ${{ inputs.action == 'apply' }}
+        uses: actions/upload-artifact@v4
         with:
           name: terraform-outputs-${{ inputs.environment }}
           path: tf-outputs.json
+
+      # -------------------------------------------------
+      # REFRESH
+      # -------------------------------------------------
+      - name: Terraform Refresh Only
+        if: ${{ inputs.action == 'refresh' }}
+        run: terraform apply -refresh-only -auto-approve -var-file="environments/${{ inputs.environment }}.tfvars"
+
+      # -------------------------------------------------
+      # IMPORT
+      # -------------------------------------------------
+      - name: Terraform Import
+        if: ${{ inputs.action == 'import' }}
+        run: |
+          if [ -z "${{ inputs.import_address }}" ] || [ -z "${{ inputs.import_id }}" ]; then
+            echo "❌ ERROR: import_address and import_id are required for import"
+            exit 1
+          fi
+
+          terraform import \
+            -var-file="environments/${{ inputs.environment }}.tfvars" \
+            "${{ inputs.import_address }}" \
+            "${{ inputs.import_id }}"
