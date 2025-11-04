@@ -25,3 +25,9 @@ Update `backend.tf` for Azure Storage backend and run `terraform init -migrate-s
 
 ## CI/CD
 GitHub Actions workflow in `.github/workflows/terraform-ci-cd.yml` supports PR plans, manual apply, and OIDC auth.
+
+
+## Key Vault Integration
+- When `key_vault.enabled = true`, Terraform generates an RSA SSH keypair for the VM if you didn't provide one,
+  stores `vm-ssh-public` and `vm-ssh-private` as secrets, and creates a Key `platform-rsa`.
+- The VM's managed identity is granted `get`/`list` on secrets so your apps can fetch the private key securely.

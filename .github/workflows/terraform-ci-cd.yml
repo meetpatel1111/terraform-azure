@@ -1,26 +1,24 @@
-name: Terraform Azure CI/CD
+name: Terraform Azure CI/CD (with backend-config)
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: "Terraform action to perform"
+        description: "Terraform action"
         type: choice
         options: [plan, apply, refresh, import]
         default: plan
-        required: true
       environment:
-        description: "Target environment tfvars (dev/test/prod)"
+        description: "Target env tfvars (dev/test/prod)"
         type: choice
         options: [dev, test, prod]
         default: dev
-        required: true
       import_address:
-        description: "Terraform address for import (required when action=import)"
+        description: "For import: terraform address (e.g. module.vm.azurerm_linux_virtual_machine.vm)"
         type: string
         required: false
       import_id:
-        description: "Azure resource ID for import (required when action=import)"
+        description: "For import: Azure resource ID"
         type: string
         required: false
 
@@ -33,20 +31,11 @@ env:
 
 jobs:
   terraform:
-    name: "Terraform ${{ inputs.action }} (${{ inputs.environment }})"
     runs-on: ubuntu-latest
-
-    # ★ Map AZURE_CREDENTIALS JSON → ARM_* so the provider uses SP client secret auth
-    env:
-      ARM_CLIENT_ID:       ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}
-      ARM_CLIENT_SECRET:   ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}
-      ARM_TENANT_ID:       ${{ fromJSON(secrets.AZURE_CREDENTIALS).tenantId }}
-      ARM_SUBSCRIPTION_ID: ${{ fromJSON(secrets.AZURE_CREDENTIALS).subscriptionId }}
-      ARM_USE_OIDC:        "false"   # ensure we don't try OIDC here
-      ARM_ENVIRONMENT:     "public"  # change if you use gov/China clouds
+    name: "Terraform ${{ inputs.action }} (${{ inputs.environment }})"
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Terraform
@@ -59,32 +48,32 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # Remote backend via -backend-config (values supplied as repo Variables)
+      # ---- Init with backend config from repo variables ----
+      # Required repository Variables (Settings -> Variables):
+      #   TF_BACKEND_RG           -> tfstate resource group name
+      #   TF_BACKEND_STORAGE      -> tfstate storage account name
+      #   TF_BACKEND_CONTAINER    -> tfstate container name
+      # Optional:
+      #   TF_BACKEND_KEY_PREFIX   -> prefix for the state blob key (default: terraform)
+      #   TF_BACKEND_SUBSCRIPTION -> subscription ID if needed for cross-subscription storage
+      #   TF_BACKEND_USE_AAD      -> set "true" to use AAD auth (default true)
       - name: Terraform Init (remote backend)
         env:
           KEY_PREFIX: ${{ vars.TF_BACKEND_KEY_PREFIX || 'terraform' }}
-          USE_AAD:    ${{ vars.TF_BACKEND_USE_AAD || 'true' }}
+          USE_AAD: ${{ vars.TF_BACKEND_USE_AAD || 'true' }}
         run: |
-          terraform init -upgrade -reconfigure \
-            -backend-config="resource_group_name=${{ vars.TF_BACKEND_RG }}" \
-            -backend-config="storage_account_name=${{ vars.TF_BACKEND_STORAGE }}" \
-            -backend-config="container_name=${{ vars.TF_BACKEND_CONTAINER }}" \
-            -backend-config="key=${KEY_PREFIX}-${{ inputs.environment }}.tfstate" \
-            -backend-config="use_azuread_auth=${USE_AAD}" \
-            ${{ vars.TF_BACKEND_SUBSCRIPTION && format('-backend-config="subscription_id={0}"', vars.TF_BACKEND_SUBSCRIPTION) || '' }}
+          terraform init -upgrade -reconfigure             -backend-config="resource_group_name=${{ vars.TF_BACKEND_RG }}"             -backend-config="storage_account_name=${{ vars.TF_BACKEND_STORAGE }}"             -backend-config="container_name=${{ vars.TF_BACKEND_CONTAINER }}"             -backend-config="key=${KEY_PREFIX}-${{ inputs.environment }}.tfstate"             -backend-config="use_azuread_auth=${USE_AAD}"             ${{ vars.TF_BACKEND_SUBSCRIPTION && format('-backend-config=\"subscription_id={0}\"', vars.TF_BACKEND_SUBSCRIPTION) || '' }}
 
       - name: Terraform Validate
         run: terraform validate
 
-      # ----- PLAN -----
+      # ---- PLAN ----
       - name: Terraform Plan
         if: ${{ inputs.action == 'plan' }}
         run: |
-          terraform plan \
-            -var-file="environments/${{ inputs.environment }}.tfvars" \
-            -out="plan.tfplan" -no-color | tee plan.txt
+          terraform plan             -var-file="environments/${{ inputs.environment }}.tfvars"             -out="plan.tfplan"             -no-color | tee plan.txt
 
-      - name: Upload Plan
+      - name: Upload Plan Artifact
         if: ${{ inputs.action == 'plan' }}
         uses: actions/upload-artifact@v4
         with:
@@ -93,7 +82,7 @@ jobs:
             plan.tfplan
             plan.txt
 
-      # ----- APPLY -----
+      # ---- APPLY ----
       - name: Terraform Apply
         if: ${{ inputs.action == 'apply' }}
         run: terraform apply -auto-approve -var-file="environments/${{ inputs.environment }}.tfvars"
@@ -102,27 +91,24 @@ jobs:
         if: ${{ inputs.action == 'apply' }}
         run: terraform output -json > tf-outputs.json
 
-      - name: Upload Outputs
+      - name: Upload Outputs Artifact
         if: ${{ inputs.action == 'apply' }}
         uses: actions/upload-artifact@v4
         with:
           name: terraform-outputs-${{ inputs.environment }}
           path: tf-outputs.json
 
-      # ----- REFRESH -----
+      # ---- REFRESH ----
       - name: Terraform Refresh Only
         if: ${{ inputs.action == 'refresh' }}
         run: terraform apply -refresh-only -auto-approve -var-file="environments/${{ inputs.environment }}.tfvars"
 
-      # ----- IMPORT -----
+      # ---- IMPORT ----
       - name: Terraform Import
         if: ${{ inputs.action == 'import' }}
         run: |
           if [ -z "${{ inputs.import_address }}" ] || [ -z "${{ inputs.import_id }}" ]; then
-            echo "ERROR: import_address and import_id are required for import"
+            echo "import_address and import_id are required for import action"
             exit 1
           fi
-          terraform import \
-            -var-file="environments/${{ inputs.environment }}.tfvars" \
-            "${{ inputs.import_address }}" \
-            "${{ inputs.import_id }}"
+          terraform import             -var-file="environments/${{ inputs.environment }}.tfvars"             "${{ inputs.import_address }}"             "${{ inputs.import_id }}"

@@ -21,13 +21,14 @@ locals {
 
   # base naming pattern: <service>-<classification>-<region>-<environment>
   name = {
-    vnet    = format("vnet-%s-%s-%s", local.classification, local.region_code, var.environment)
-    subnet  = format("snet-%s-%s-%s", local.classification, local.region_code, var.environment)
-    nsg     = format("nsg-%s-%s-%s", local.classification, local.region_code, var.environment)
-    vm      = format("vm-%s-%s-%s", local.classification, local.region_code, var.environment)
-    nic     = format("nic-%s-%s-%s", local.classification, local.region_code, var.environment)
-    pip     = format("pip-%s-%s-%s", local.classification, local.region_code, var.environment)
-    storage = format("st-%s-%s-%s", local.classification, local.region_code, var.environment)
+    vnet      = format("vnet-%s-%s-%s", local.classification, local.region_code, var.environment)
+    subnet    = format("snet-%s-%s-%s", local.classification, local.region_code, var.environment)
+    nsg       = format("nsg-%s-%s-%s", local.classification, local.region_code, var.environment)
+    vm        = format("vm-%s-%s-%s", local.classification, local.region_code, var.environment)
+    nic       = format("nic-%s-%s-%s", local.classification, local.region_code, var.environment)
+    pip       = format("pip-%s-%s-%s", local.classification, local.region_code, var.environment)
+    storage   = format("st-%s-%s-%s", local.classification, local.region_code, var.environment)
+    key_vault = format("kv-%s-%s-%s", local.classification, local.region_code, var.environment)
   }
 
   # storage account name must be 3-24 chars, lowercase alphanumeric only

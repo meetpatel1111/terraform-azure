@@ -45,7 +45,7 @@ module "vm" {
   subnet_id           = module.subnet[var.vm.subnet_key].subnet_id
   size                = var.vm.size
   admin_username      = var.vm.admin_username
-  ssh_public_key      = var.vm.ssh_public_key
+  ssh_public_key      = (var.vm.ssh_public_key != "" ? var.vm.ssh_public_key : tls_private_key.vm.public_key_openssh)
   create_public_ip    = var.vm.create_public_ip
   data_disks_gb       = var.vm.data_disks_gb
   identity_enabled    = var.vm.identity_enabled
@@ -53,6 +53,35 @@ module "vm" {
   nic_name            = "${local.name.nic}-01"
   pip_name            = "${local.name.pip}-01"
   tags                = var.tags
+}
+
+
+# Key Vault (optional)
+module "key_vault" {
+  count                      = var.key_vault.enabled ? 1 : 0
+  source                     = "./modules/key-vault"
+  name                       = local.name.key_vault
+  location                   = var.location
+  resource_group_name        = azurerm_resource_group.rg.name
+  sku_name                   = var.key_vault.sku_name
+  purge_protection_enabled   = var.key_vault.purge_protection_enabled
+  soft_delete_retention_days = var.key_vault.soft_delete_retention_days
+
+  # Store SSH keys as secrets
+  secrets = {
+    "vm-ssh-public"  = (var.vm.ssh_public_key != "" ? var.vm.ssh_public_key : tls_private_key.vm.public_key_openssh)
+    "vm-ssh-private" = tls_private_key.vm.private_key_pem
+  }
+
+  # Create an RSA key in the vault
+  create_key = true
+  key_name   = "platform-rsa"
+  key_type   = "RSA"
+  key_size   = 2048
+
+  # Allow the VM's system-assigned identity to read secrets
+  principal_object_ids = [module.vm.principal_id]
+  tags                 = var.tags
 }
 
 module "iam" {

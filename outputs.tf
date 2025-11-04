@@ -27,3 +27,14 @@ output "storage_account_id" {
   description = "ID of the created Storage Account."
   value       = module.storage.id
 }
+
+
+output "key_vault_uri" {
+  description = "Key Vault URI (null if disabled)."
+  value       = var.key_vault.enabled ? module.key_vault[0].uri : null
+}
+
+output "vm_principal_id" {
+  description = "Object ID of the VM's system-assigned managed identity."
+  value       = module.vm.principal_id
+}

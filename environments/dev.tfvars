@@ -61,3 +61,9 @@ storage = {
 }
 
 role_assignments = []
+
+
+key_vault = {
+  enabled  = true
+  sku_name = "standard"
+}

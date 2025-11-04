@@ -87,3 +87,17 @@ variable "role_assignments" {
   }))
   default = []
 }
+
+
+variable "key_vault" {
+  description = "Key Vault configuration. When enabled, stores VM SSH keys as secrets and creates an RSA key."
+  type = object({
+    enabled                    = bool
+    sku_name                   = optional(string, "standard") # standard | premium
+    purge_protection_enabled   = optional(bool, true)
+    soft_delete_retention_days = optional(number, 7)
+  })
+  default = {
+    enabled = false
+  }
+}
