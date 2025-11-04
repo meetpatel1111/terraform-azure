@@ -9,19 +9,16 @@ on:
         options: [plan, apply, refresh, import]
         default: plan
         required: true
-
       environment:
         description: "Target environment tfvars (dev/test/prod)"
         type: choice
         options: [dev, test, prod]
         default: dev
         required: true
-
       import_address:
         description: "Terraform address for import (required when action=import)"
         type: string
         required: false
-
       import_id:
         description: "Azure resource ID for import (required when action=import)"
         type: string
@@ -39,6 +36,15 @@ jobs:
     name: "Terraform ${{ inputs.action }} (${{ inputs.environment }})"
     runs-on: ubuntu-latest
 
+    # ★ Map AZURE_CREDENTIALS JSON → ARM_* so the provider uses SP client secret auth
+    env:
+      ARM_CLIENT_ID:       ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}
+      ARM_CLIENT_SECRET:   ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}
+      ARM_TENANT_ID:       ${{ fromJSON(secrets.AZURE_CREDENTIALS).tenantId }}
+      ARM_SUBSCRIPTION_ID: ${{ fromJSON(secrets.AZURE_CREDENTIALS).subscriptionId }}
+      ARM_USE_OIDC:        "false"   # ensure we don't try OIDC here
+      ARM_ENVIRONMENT:     "public"  # change if you use gov/China clouds
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -48,27 +54,16 @@ jobs:
         with:
           terraform_version: 1.7.5
 
-      - name: Azure Login (via Credentials JSON)
+      - name: Azure Login (Service Principal JSON)
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # -------------------------------------------------
-      # REMOTE STATE BACKEND CONFIG
-      # Configure backend via repo variables (NOT stored in code)
-      # Required GitHub Variables:
-      #   TF_BACKEND_RG
-      #   TF_BACKEND_STORAGE
-      #   TF_BACKEND_CONTAINER
-      # Optional:
-      #   TF_BACKEND_KEY_PREFIX  (default = terraform)
-      #   TF_BACKEND_SUBSCRIPTION
-      #   TF_BACKEND_USE_AAD     (default = true)
-      # -------------------------------------------------
+      # Remote backend via -backend-config (values supplied as repo Variables)
       - name: Terraform Init (remote backend)
         env:
           KEY_PREFIX: ${{ vars.TF_BACKEND_KEY_PREFIX || 'terraform' }}
-          USE_AAD: ${{ vars.TF_BACKEND_USE_AAD || 'true' }}
+          USE_AAD:    ${{ vars.TF_BACKEND_USE_AAD || 'true' }}
         run: |
           terraform init -upgrade -reconfigure \
             -backend-config="resource_group_name=${{ vars.TF_BACKEND_RG }}" \
@@ -81,18 +76,15 @@ jobs:
       - name: Terraform Validate
         run: terraform validate
 
-      # -------------------------------------------------
-      # PLAN
-      # -------------------------------------------------
+      # ----- PLAN -----
       - name: Terraform Plan
         if: ${{ inputs.action == 'plan' }}
         run: |
           terraform plan \
             -var-file="environments/${{ inputs.environment }}.tfvars" \
-            -out="plan.tfplan" \
-            -no-color | tee plan.txt
+            -out="plan.tfplan" -no-color | tee plan.txt
 
-      - name: Upload Plan Artifact
+      - name: Upload Plan
         if: ${{ inputs.action == 'plan' }}
         uses: actions/upload-artifact@v4
         with:
@@ -101,42 +93,35 @@ jobs:
             plan.tfplan
             plan.txt
 
-      # -------------------------------------------------
-      # APPLY
-      # -------------------------------------------------
+      # ----- APPLY -----
       - name: Terraform Apply
         if: ${{ inputs.action == 'apply' }}
         run: terraform apply -auto-approve -var-file="environments/${{ inputs.environment }}.tfvars"
 
-      - name: Capture Terraform Outputs
+      - name: Capture Outputs
         if: ${{ inputs.action == 'apply' }}
         run: terraform output -json > tf-outputs.json
 
-      - name: Upload Outputs Artifact
+      - name: Upload Outputs
         if: ${{ inputs.action == 'apply' }}
         uses: actions/upload-artifact@v4
         with:
           name: terraform-outputs-${{ inputs.environment }}
           path: tf-outputs.json
 
-      # -------------------------------------------------
-      # REFRESH
-      # -------------------------------------------------
+      # ----- REFRESH -----
       - name: Terraform Refresh Only
         if: ${{ inputs.action == 'refresh' }}
         run: terraform apply -refresh-only -auto-approve -var-file="environments/${{ inputs.environment }}.tfvars"
 
-      # -------------------------------------------------
-      # IMPORT
-      # -------------------------------------------------
+      # ----- IMPORT -----
       - name: Terraform Import
         if: ${{ inputs.action == 'import' }}
         run: |
           if [ -z "${{ inputs.import_address }}" ] || [ -z "${{ inputs.import_id }}" ]; then
-            echo "❌ ERROR: import_address and import_id are required for import"
+            echo "ERROR: import_address and import_id are required for import"
             exit 1
           fi
-
           terraform import \
             -var-file="environments/${{ inputs.environment }}.tfvars" \
             "${{ inputs.import_address }}" \
