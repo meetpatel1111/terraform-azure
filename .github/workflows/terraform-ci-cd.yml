@@ -126,7 +126,7 @@ jobs:
           terraform plan \
             -var-file="environments/${{ inputs.environment }}.tfvars" \
             -out="plan.tfplan" \
-            -no-color -detailed-exitcode | tee plan.txt
+            -no-color -detailed-exitcode | tee plan.txt || true
           code=${PIPESTATUS[0]}
           if [[ "$code" -eq 1 ]]; then
             echo "Plan failed"; exit 1
