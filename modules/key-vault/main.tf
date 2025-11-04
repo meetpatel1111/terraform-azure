@@ -7,7 +7,6 @@ resource "azurerm_key_vault" "kv" {
   tenant_id           = data.azurerm_client_config.current.tenant_id
   sku_name            = var.sku_name
 
-  # Use Azure RBAC instead of access_policies
   rbac_authorization_enabled = true
 
   purge_protection_enabled      = var.purge_protection_enabled
@@ -16,38 +15,40 @@ resource "azurerm_key_vault" "kv" {
   tags                          = var.tags
 }
 
-# --- RBAC ROLE ASSIGNMENTS ---
-
 # Service Principal running Terraform: full administrative rights on vault
 resource "azurerm_role_assignment" "kv_admin" {
   scope                = azurerm_key_vault.kv.id
   role_definition_name = "Key Vault Administrator"
   principal_id         = data.azurerm_client_config.current.object_id
+  skip_service_principal_aad_check = true
 }
 
-# Needed to create and manage keys (including rotation read/write)
+# Needed to create and manage keys
 resource "azurerm_role_assignment" "kv_crypto_officer" {
   scope                = azurerm_key_vault.kv.id
   role_definition_name = "Key Vault Crypto Officer"
   principal_id         = data.azurerm_client_config.current.object_id
+  skip_service_principal_aad_check = true
 }
 
-# Needed to allow getrotationpolicy and avoid 403 during reads
+# Needed to avoid 403 when reading key rotation policy
 resource "azurerm_role_assignment" "kv_crypto_user" {
   scope                = azurerm_key_vault.kv.id
   role_definition_name = "Key Vault Crypto User"
   principal_id         = data.azurerm_client_config.current.object_id
+  skip_service_principal_aad_check = true
 }
 
-# Managed identities (VM, apps) allowed to read secrets
+# Managed identities allowed to read secrets
 resource "azurerm_role_assignment" "kv_secrets_user" {
   for_each             = toset(var.principal_object_ids)
   scope                = azurerm_key_vault.kv.id
   role_definition_name = "Key Vault Secrets User"
   principal_id         = each.value
+  skip_service_principal_aad_check = true
 }
 
-# Wait for RBAC propagation to avoid 403 failures
+# Wait for RBAC propagation
 resource "time_sleep" "wait_for_rbac" {
   depends_on = [
     azurerm_role_assignment.kv_admin,
@@ -58,7 +59,7 @@ resource "time_sleep" "wait_for_rbac" {
   create_duration = "45s"
 }
 
-# Store secrets after RBAC is ready
+# Save secrets only after RBAC is active
 resource "azurerm_key_vault_secret" "secrets" {
   for_each     = var.secrets
   name         = each.key
@@ -67,7 +68,7 @@ resource "azurerm_key_vault_secret" "secrets" {
   depends_on   = [time_sleep.wait_for_rbac]
 }
 
-# Create RSA key if enabled
+# Create RSA key after RBAC is active
 resource "azurerm_key_vault_key" "key" {
   count        = var.create_key ? 1 : 0
   name         = var.key_name
@@ -75,5 +76,11 @@ resource "azurerm_key_vault_key" "key" {
   key_type     = var.key_type
   key_size     = var.key_size
   key_opts     = ["encrypt", "decrypt", "sign", "verify", "wrapKey", "unwrapKey"]
-  depends_on   = [time_sleep.wait_for_rbac]
+
+  # Prevent Terraform from querying rotation policy (prevents 403)
+  rotation_policy {
+    expire_after = null
+  }
+
+  depends_on = [time_sleep.wait_for_rbac]
 }
