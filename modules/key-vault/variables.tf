@@ -1,71 +1,59 @@
 variable "name" {
-  type        = string
-  description = "Name of the Key Vault."
+  type = string
 }
 
 variable "location" {
-  type        = string
-  description = "Azure region for the Key Vault."
+  type = string
 }
 
 variable "resource_group_name" {
-  type        = string
-  description = "Resource Group name where the Key Vault will be created."
+  type = string
 }
 
 variable "sku_name" {
-  type        = string
-  description = "SKU of the Key Vault (standard or premium)."
+  type    = string
+  default = "standard"
 }
 
 variable "purge_protection_enabled" {
-  type        = bool
-  description = "Whether to enable purge protection."
+  type    = bool
+  default = true
 }
 
 variable "soft_delete_retention_days" {
-  type        = number
-  description = "Soft delete retention in days."
+  type    = number
+  default = 7
 }
 
 variable "secrets" {
-  type        = map(string)
-  description = "Map of secret name -> value to create in the Key Vault."
-  default     = {}
+  type = map(string)
 }
 
 variable "create_key" {
-  type        = bool
-  description = "Whether to create a cryptographic key in the Key Vault."
-  default     = false
+  type    = bool
+  default = false
 }
 
 variable "key_name" {
-  type        = string
-  description = "Name of the key to create (if create_key=true)."
-  default     = "platform-key"
+  type    = string
+  default = null
 }
 
 variable "key_type" {
-  type        = string
-  description = "Key type (e.g., RSA, EC)."
-  default     = "RSA"
+  type    = string
+  default = "RSA"
 }
 
 variable "key_size" {
-  type        = number
-  description = "Key size in bits (e.g., 2048 for RSA)."
-  default     = 2048
+  type    = number
+  default = 2048
 }
 
+# ✅ ensure list input is known length at plan time
 variable "principal_object_ids" {
-  type        = list(string)
-  default     = []
-  description = "List of principal object IDs to grant Key Vault access."
+  type = list(string)
 }
 
 variable "tags" {
-  type        = map(string)
-  description = "Tags to apply to the Key Vault."
-  default     = {}
+  type = map(string)
 }

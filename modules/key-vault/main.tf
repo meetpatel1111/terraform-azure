@@ -1,3 +1,7 @@
+###########################
+# Key Vault Module
+###########################
+
 data "azurerm_client_config" "current" {}
 
 resource "azurerm_key_vault" "kv" {
@@ -7,7 +11,6 @@ resource "azurerm_key_vault" "kv" {
   tenant_id           = data.azurerm_client_config.current.tenant_id
   sku_name            = var.sku_name
 
-  # Use Azure RBAC (no access_policies)
   rbac_authorization_enabled = true
 
   purge_protection_enabled      = var.purge_protection_enabled
@@ -16,16 +19,10 @@ resource "azurerm_key_vault" "kv" {
   tags                          = var.tags
 }
 
-# NEW: create a stable-keyed map from the (dynamic) list so for_each keys are known at plan time
-locals {
-  principal_map = {
-    for i, v in var.principal_object_ids :
-    tostring(i) => v
-    if v != null && v != ""
-  }
-}
+###########################
+# RBAC assignments for Terraform principal
+###########################
 
-# Service Principal running Terraform: full administrative rights on vault
 resource "azurerm_role_assignment" "kv_admin" {
   scope                            = azurerm_key_vault.kv.id
   role_definition_name             = "Key Vault Administrator"
@@ -33,7 +30,6 @@ resource "azurerm_role_assignment" "kv_admin" {
   skip_service_principal_aad_check = true
 }
 
-# Needed to create and manage keys
 resource "azurerm_role_assignment" "kv_crypto_officer" {
   scope                            = azurerm_key_vault.kv.id
   role_definition_name             = "Key Vault Crypto Officer"
@@ -41,7 +37,6 @@ resource "azurerm_role_assignment" "kv_crypto_officer" {
   skip_service_principal_aad_check = true
 }
 
-# Needed to avoid 403 when reading key rotation policy
 resource "azurerm_role_assignment" "kv_crypto_user" {
   scope                            = azurerm_key_vault.kv.id
   role_definition_name             = "Key Vault Crypto User"
@@ -49,16 +44,30 @@ resource "azurerm_role_assignment" "kv_crypto_user" {
   skip_service_principal_aad_check = true
 }
 
-# Managed identities allowed to read secrets
+###########################
+# Managed identity permissions for secrets
+###########################
+
+# FIX: Deterministic for_each keys so Terraform can plan
+locals {
+  principal_map = {
+    for idx in range(length(var.principal_object_ids)) :
+    tostring(idx) => var.principal_object_ids[idx]
+  }
+}
+
 resource "azurerm_role_assignment" "kv_secrets_user" {
-  for_each                         = local.principal_map # CHANGED: was toset(var.principal_object_ids)
+  for_each                         = local.principal_map
   scope                            = azurerm_key_vault.kv.id
   role_definition_name             = "Key Vault Secrets User"
   principal_id                     = each.value
   skip_service_principal_aad_check = true
 }
 
+###########################
 # Wait for RBAC propagation
+###########################
+
 resource "time_sleep" "wait_for_rbac" {
   depends_on = [
     azurerm_role_assignment.kv_admin,
@@ -69,7 +78,10 @@ resource "time_sleep" "wait_for_rbac" {
   create_duration = "45s"
 }
 
-# Save secrets only after RBAC is active
+###########################
+# Store secrets
+###########################
+
 resource "azurerm_key_vault_secret" "secrets" {
   for_each     = var.secrets
   name         = each.key
@@ -78,7 +90,10 @@ resource "azurerm_key_vault_secret" "secrets" {
   depends_on   = [time_sleep.wait_for_rbac]
 }
 
-# Create RSA key after RBAC is active
+###########################
+# Optional Key Creation
+###########################
+
 resource "azurerm_key_vault_key" "key" {
   count        = var.create_key ? 1 : 0
   name         = var.key_name
@@ -87,12 +102,11 @@ resource "azurerm_key_vault_key" "key" {
   key_size     = var.key_size
   key_opts     = ["encrypt", "decrypt", "sign", "verify", "wrapKey", "unwrapKey"]
 
-  # Valid rotation policy (prevents provider from trying to read an existing policy without permission)
   rotation_policy {
-    expire_after         = "P365D" # key expires after 365 days
-    notify_before_expiry = "P30D"  # notify 30 days before expiry
+    expire_after         = "P365D"
+    notify_before_expiry = "P30D"
     automatic {
-      time_before_expiry = "P30D" # rotate 30 days before expiry
+      time_before_expiry = "P30D"
     }
   }
 
