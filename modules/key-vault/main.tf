@@ -7,12 +7,22 @@ resource "azurerm_key_vault" "kv" {
   tenant_id           = data.azurerm_client_config.current.tenant_id
   sku_name            = var.sku_name
 
+  # Use Azure RBAC (no access_policies)
   rbac_authorization_enabled = true
 
   purge_protection_enabled      = var.purge_protection_enabled
   soft_delete_retention_days    = var.soft_delete_retention_days
   public_network_access_enabled = true
   tags                          = var.tags
+}
+
+# NEW: create a stable-keyed map from the (dynamic) list so for_each keys are known at plan time
+locals {
+  principal_map = {
+    for i, v in var.principal_object_ids :
+    tostring(i) => v
+    if v != null && v != ""
+  }
 }
 
 # Service Principal running Terraform: full administrative rights on vault
@@ -41,7 +51,7 @@ resource "azurerm_role_assignment" "kv_crypto_user" {
 
 # Managed identities allowed to read secrets
 resource "azurerm_role_assignment" "kv_secrets_user" {
-  for_each                         = toset(var.principal_object_ids)
+  for_each                         = local.principal_map # CHANGED: was toset(var.principal_object_ids)
   scope                            = azurerm_key_vault.kv.id
   role_definition_name             = "Key Vault Secrets User"
   principal_id                     = each.value
@@ -77,6 +87,7 @@ resource "azurerm_key_vault_key" "key" {
   key_size     = var.key_size
   key_opts     = ["encrypt", "decrypt", "sign", "verify", "wrapKey", "unwrapKey"]
 
+  # Valid rotation policy (prevents provider from trying to read an existing policy without permission)
   rotation_policy {
     expire_after         = "P365D" # key expires after 365 days
     notify_before_expiry = "P30D"  # notify 30 days before expiry

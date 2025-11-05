@@ -60,8 +60,8 @@ variable "key_size" {
 
 variable "principal_object_ids" {
   type        = list(string)
-  description = "Object IDs to grant Key Vault secret get/list access policies."
   default     = []
+  description = "List of principal object IDs to grant Key Vault access."
 }
 
 variable "tags" {
