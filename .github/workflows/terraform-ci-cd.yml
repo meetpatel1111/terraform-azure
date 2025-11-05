@@ -6,7 +6,7 @@ on:
       action:
         description: "Terraform action to perform"
         type: choice
-        options: [plan, apply, refresh, import, destroy]   # ← added destroy
+        options: [plan, apply, refresh, import, destroy]
         default: plan
         required: true
       environment:
@@ -15,12 +15,8 @@ on:
         options: [dev, test, prod]
         default: dev
         required: true
-      import_address:
-        description: "Terraform address for import (required when action=import)"
-        type: string
-        required: false
-      import_id:
-        description: "Azure resource ID for import (required when action=import)"
+      import_script:
+        description: "Paste full terraform import bash command (used only when action=import)"
         type: string
         required: false
 
@@ -142,7 +138,6 @@ jobs:
             plan.tfplan
             plan.txt
 
-      # NEW: make it obvious when changes are present, without failing the job
       - name: Plan summary (changes detected)
         if: ${{ inputs.action == 'plan' && steps.plan.outputs.exit_code == '2' }}
         run: |
@@ -169,21 +164,21 @@ jobs:
         if: ${{ inputs.action == 'refresh' }}
         run: terraform apply -refresh-only -auto-approve -var-file="environments/${{ inputs.environment }}.tfvars"
 
-      # ----- IMPORT -----
+      # ----- IMPORT (via one pasted bash command) -----
       - name: Terraform Import
         if: ${{ inputs.action == 'import' }}
         shell: bash
         run: |
-          if [[ -z "${{ inputs.import_address }}" || -z "${{ inputs.import_id }}" ]]; then
-            echo "ERROR: import_address and import_id are required for import"
+          set -euo pipefail
+          if [[ -z "${{ inputs.import_script }}" ]]; then
+            echo "ERROR: import_script is required when action=import"
             exit 1
           fi
-          terraform import \
-            -var-file="environments/${{ inputs.environment }}.tfvars" \
-            "${{ inputs.import_address }}" \
-            "${{ inputs.import_id }}"
+          echo "Running custom import script:"
+          echo "${{ inputs.import_script }}"
+          bash -c "${{ inputs.import_script }}"
 
-      # ----- DESTROY -----   #
+      # ----- DESTROY -----
       - name: Terraform Destroy
         if: ${{ inputs.action == 'destroy' }}
         run: terraform destroy -auto-approve -var-file="environments/${{ inputs.environment }}.tfvars"
